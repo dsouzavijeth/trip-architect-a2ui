@@ -11,18 +11,10 @@ import { catalog } from "@/a2ui/catalog";
 import { surfaceBus } from "@/a2ui/surface-bus";
 import { tripStore, type TripStop } from "@/a2ui/trip-store";
 import { TripMap } from "./TripMap";
+import { ItineraryPanel } from "./ItineraryPanel";
 
 const CHANNEL = "trip_agent";
 
-/**
- * Right pane: the Leaflet map (app-owned) over the current A2UI surface.
- *
- * onAction fires when the user taps a button inside a rendered surface. We:
- *   1. Mark the current surface "consumed" so the card is replaced immediately
- *      (no lingering, no double-clicks) until the next surface arrives.
- *   2. Apply the side effect: approve_stop pins the map; restart_trip clears it.
- *   3. Reflect the click in chat and re-run the agent so it responds.
- */
 export function TripWorkspace() {
   const { agent } = useAgent({ agentId: CHANNEL });
   const [consumedId, setConsumedId] = useState<string | null>(null);
@@ -81,8 +73,10 @@ export function TripWorkspace() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 min-h-0">
+      {/* relative so the itinerary panel can overlay the map */}
+      <div className="relative flex-1 min-h-0">
         <TripMap />
+        <ItineraryPanel />
       </div>
 
       <div className="shrink-0 max-h-[44%] overflow-y-auto border-t border-[var(--line)] bg-[var(--surface)]">
@@ -160,7 +154,6 @@ function TripSurface({
     );
   }
 
-  // The card was just acted on; hide it until the next surface arrives.
   if (surfaceId === consumedId) {
     return (
       <div className="p-6 flex items-center gap-3 text-[13px] text-[var(--ink)]/70">
