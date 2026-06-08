@@ -205,7 +205,7 @@ Override the model without touching code via `agent/.env`:
 
 ```
 NEBIUS_API_KEY=...
-NEBIUS_MODEL=nvidia/nemotron-3-super-120b-a12b
+NEBIUS_MODEL=Qwen/Qwen2.5-72B-Instruct
 # NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
 ```
 
@@ -337,5 +337,6 @@ Built with [CopilotKit](https://copilotkit.ai), the [A2UI protocol](https://a2ui
 
 ### License
 
-CopilotKit and its examples are MIT-licensed; retain the upstream notices for any code
-derived from the example above. Map tiles © CARTO / © OpenStreetMap contributors.
+This repository's source code is available under the [MIT License](LICENSE).
+
+_Map data: tiles © [CARTO](https://carto.com/attribution), map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors. (Hidden on the map via `attributionControl={false}`; set it to `true` to show the credit on screen instead.)_
