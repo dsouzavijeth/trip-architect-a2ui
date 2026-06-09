@@ -37,7 +37,6 @@ closed model.
     - [The key files, in one line each](#the-key-files-in-one-line-each)
   - [The A2UI catalog](#the-a2ui-catalog)
   - [Customizing](#customizing)
-  - [Troubleshooting](#troubleshooting)
   - [Acknowledgements](#acknowledgements)
     - [License](#license)
 
@@ -46,15 +45,20 @@ closed model.
 ## What it does
 
 - You chat on the left; a map and the current proposal sit on the right.
+- **Ask first, plan when ready.** Atlas holds a normal conversation — ask "how many
+  days do I need in Thailand?" and it just answers. It only starts proposing stops
+  once you have a destination and want to build the itinerary.
 - Atlas proposes **one** real place per turn as an A2UI **StopCard** (category,
   name, one-line reason, suggested time, Approve / Skip).
-- **Add to trip** drops a numbered pin on the map, draws the route line between
-  stops, and Atlas proposes the next stop.
+- **Add to trip** drops a numbered pin at the place's real, geocoded location, draws
+  the route line between stops, and Atlas proposes the next.
 - **Skip** asks Atlas for a genuinely different place.
+- **Hover a pin** for that stop's details, and a collapsible **"Your plan"** panel
+  overlays the map with the full itinerary, grouped by day.
 - You can steer at any time ("more local food", "skip the touristy stuff") and the
   next card reacts.
 - When the trip is complete (or you say you're done), Atlas renders a **completion
-  card** with a short recap and **Plan more** / **Start over** — no more
+  card** with a short recap and **Add another stop** / **Start over** — no more
   suggestions until you ask.
 
 ---
@@ -71,14 +75,14 @@ Three layers, cleanly separated:
 
 ```
  Browser (Next.js)
- ┌───────────────────────────────────────────────────────────┐
- │  /trip page                                                 │
+ ┌────────────────────────────────────────────────────────────┐
+ │  /trip page                                                │
  │  ┌─────────────┐   ┌──────────────────────────────────────┐│
- │  │ CopilotChat │   │ TripWorkspace                         ││
- │  │ (left)      │   │  • Leaflet map (app-owned)            ││
- │  │             │   │  • current StopCard surface (A2UI)    ││
+ │  │ CopilotChat │   │ TripWorkspace                        ││
+ │  │ (left)      │   │  • Leaflet map (app-owned)           ││
+ │  │             │   │  • current StopCard surface (A2UI)   ││
  │  └─────────────┘   └──────────────────────────────────────┘│
- └───────────────┬───────────────────────────▲────────────────┘
+ └───────────────┬─────────────────────────────▲──────────────┘
                  │ POST /api/copilotkit        │ A2UI ops mirrored
                  ▼ (CopilotRuntime + HttpAgent)│ to the canvas
         ┌────────────────────────────────────────────────┐
@@ -88,11 +92,13 @@ Three layers, cleanly separated:
                         │ AG-UI over HTTP/SSE
                         ▼
         ┌────────────────────────────────────────────────┐
-        │ Python FastAPI :8123  ──  /trip                  │
-        │  LangGraph create_agent + CopilotKitMiddleware   │
-        │  tools: propose_stop, finish_trip                │
-        │  model: Nebius open LLM (langchain-openai)       │
-        │  emits A2UI ops via copilotkit.a2ui helpers      │
+        │ Python FastAPI :8123  ──  /trip                │
+        │  LangGraph create_agent + CopilotKit middleware│
+        │  + OneProposalPerTurn (ends turn after 1 card) │
+        │  tools: propose_stop, finish_trip              │
+        │  coords geocoded via OpenStreetMap / Nominatim │
+        │  model: Nebius open LLM (langchain-openai)     │
+        │  emits A2UI ops via copilotkit.a2ui helpers    │
         └────────────────────────────────────────────────┘
 ```
 
@@ -110,12 +116,18 @@ agent composes. The map is a different beast — it's an app-owned Leaflet canva
 
 ## How a turn works (the full loop)
 
+**Conversation vs planning.** Not every turn renders a card. If you ask a question or
+haven't settled on a destination, Atlas just replies in chat. Once you're ready to
+build, it switches to the loop below.
+
 1. **You ask** ("Plan me 3 days in Lisbon, food-heavy, easy pace"). The message goes
    through the bridge to the Python `trip_agent`.
-2. **The agent calls `propose_stop(name, lat, lng, category, note, time)`** — a typed
-   tool. It builds a StopCard component tree (from the shared catalog) and returns
-   A2UI ops: `create_surface` + `update_components`. The **Approve button inlines the
-   full stop into its action context**.
+2. **The agent calls `propose_stop(name, region, lat, lng, category, note, time)`** — a
+   typed tool. The real coordinates are resolved by **geocoding the place within its
+   region** (OpenStreetMap/Nominatim), so the pin lands correctly; the model's lat/lng is
+   only a fallback. It builds a StopCard component tree (from the shared catalog) and
+   returns A2UI ops: `create_surface` + `update_components`. The **Approve button inlines
+   the full stop into its action context**.
 3. **The surface streams to the browser.** The agent's tool result carries
    `a2ui_operations`; the A2UI middleware emits an activity message; `MirrorRenderer`
    forwards the ops onto the `surface-bus`; `TripWorkspace`'s canvas renders the
@@ -133,12 +145,17 @@ agent composes. The map is a different beast — it's an app-owned Leaflet canva
 6. **The agent sees the approval** (`log_a2ui_event`), acknowledges in one line, and
    calls `propose_stop` for the next place — back to step 2.
 7. **When the trip is complete**, the agent calls **`finish_trip(summary)`** instead,
-   which renders the completion card (**Plan more** / **Start over**). Those buttons
-   fire `plan_more` / `restart_trip` events through the same `onAction` path;
+   which renders the completion card (**Add another stop** / **Start over**). Those
+   buttons fire `plan_more` / `restart_trip` events through the same `onAction` path;
    `restart_trip` clears the map.
 
 `skip_stop` works like `approve_stop` minus the pin: the agent proposes a different
 place.
+
+**The pause is enforced, not requested.** A small `OneProposalPerTurn` middleware ends
+the agent's run the moment one `propose_stop` / `finish_trip` fires, so the loop always
+waits for your click — even with a strong, eager model that would otherwise plan the
+whole trip in a single turn.
 
 ---
 
@@ -148,7 +165,7 @@ place.
 |------|-------|
 | Frontend | Next.js 16 · React 19 · Tailwind v4 · TypeScript · `@copilotkit/react-core/v2` · `@copilotkit/a2ui-renderer` · `react-leaflet` v5 + Leaflet · Recharts (catalog charts) |
 | Bridge | `@copilotkit/runtime/v2` · `@ag-ui/client` (`HttpAgent`) · `@ag-ui/core` |
-| Backend | Python 3.12 · FastAPI · `ag-ui-langgraph` · `copilotkit` (Python SDK) · LangChain + LangGraph · `langchain-openai` |
+| Backend | Python 3.12 · FastAPI · `ag-ui-langgraph` · `copilotkit` (Python SDK) · LangChain + LangGraph · `langchain-openai` · OpenStreetMap / Nominatim geocoding |
 | Model | Open LLM via **Nebius Token Factory** (OpenAI-compatible) |
 
 ---
@@ -217,6 +234,10 @@ playground (the catalog changes). A `-fast` variant, where offered, keeps the
 propose→approve loop snappy. Small/omni models tend to be slow and unreliable at
 tool-calling — the symptom is the agent replying in prose instead of rendering a card.
 
+Coordinates aren't the model's job: it supplies the place name and `region`, and the
+agent geocodes the real location (see [Customizing](#customizing) to swap in a keyed
+geocoder for venue-precise pins).
+
 ---
 
 ## Project structure
@@ -227,7 +248,7 @@ agent/                                  # Python AG-UI agent
 ├── pyproject.toml                      # uv-managed deps
 ├── .env.example                        # NEBIUS_API_KEY (+ optional overrides)
 └── src/
-    ├── trip_agent.py                   # the agent: propose_stop + finish_trip + prompt
+    ├── trip_agent.py                   # agent: tools, prompt, geocoding, HITL middleware
     ├── llm.py                          # Nebius model factory (get_model)
     ├── catalog.py                      # CATALOG_ID shared with the frontend
     └── a2ui/schemas/stop_card.json     # reference StopCard tree (for tweaking)
@@ -242,7 +263,8 @@ src/                                    # Next.js app
 ├── components/
 │   ├── Providers.tsx                   # <CopilotKit> + trip mirror renderer
 │   ├── TripWorkspace.tsx               # map + current surface + onAction (the loop glue)
-│   ├── TripMap.tsx / TripMapInner.tsx  # Leaflet map (pins + route), client-only
+│   ├── TripMap.tsx / TripMapInner.tsx  # Leaflet map (pins + route + hover tooltips)
+│   ├── ItineraryPanel.tsx              # "Your plan" overlay — itinerary grouped by day
 │   └── Split.tsx                       # draggable two-pane layout
 └── a2ui/
     ├── catalog/
@@ -257,10 +279,11 @@ src/                                    # Next.js app
 
 ### The key files, in one line each
 
-- **`trip_agent.py`** — `propose_stop` builds a StopCard from catalog components with
-  the stop inlined into the Approve button's context; `finish_trip` builds the
-  completion card. The system prompt enforces *one tool call per turn*, accurate
-  coordinates, no re-proposing an added place, and finishing via `finish_trip`.
+- **`trip_agent.py`** — `propose_stop` builds a StopCard from catalog components with the
+  stop (geocoded to its real location) inlined into the Approve button's context;
+  `finish_trip` builds the completion card. The `OneProposalPerTurn` middleware ends the
+  turn after one proposal (the human-in-the-loop guarantee); the system prompt sets the
+  conversation-vs-planning behaviour and forbids re-proposing an added place.
 - **`route.ts`** — registers the `trip_agent` `HttpAgent` (aliased to `default`); sets
   `a2ui: { injectA2UITool: false }` because the Python agent emits the ops itself.
 - **`TripWorkspace.tsx`** — the glue. Renders the map over the current surface, and its
@@ -298,24 +321,14 @@ is composed from `Card` + `Stack` + `Overline` + `Heading` + `Text` + `Badge` + 
 - **Swap the model** — set `NEBIUS_MODEL` in `agent/.env`. No code change.
 - **Restyle** — `src/a2ui/theme.css` (catalog surfaces) and `src/app/globals.css`
   (app shell). The map's look is the CARTO dark tiles + pin styles in `TripMapInner.tsx`.
+- **Coordinate accuracy** — `geocode()` in `trip_agent.py` resolves pins via
+  OpenStreetMap/Nominatim, bounded to the stop's region. Swap in a keyed geocoder
+  (Google / Mapbox) there for venue-precise pins.
+- **Conversation vs planning** — the two-mode behaviour (chat freely, propose only when
+  ready) lives in `SYSTEM_PROMPT`; the one-proposal pause lives in the
+  `OneProposalPerTurn` middleware — both in `trip_agent.py`.
 - **Add a new component the agent can use** — add a Zod definition + a renderer to the
   catalog, then reference it from a tool's component tree.
-
----
-
-## Troubleshooting
-
-- **`GET /api/copilotkit/threads?agentId=… 404`** — benign. The v2 client polls for
-  saved thread history; the single-route runtime doesn't implement a thread store.
-- **`install_httpx_hook: … no recognized event_hooks attribute`** — benign. CopilotKit
-  can't forward its `x-*` headers through the Nebius httpx client; not needed here.
-- **Agent replies in prose instead of rendering a card** — the model isn't calling
-  tools reliably. Switch `NEBIUS_MODEL` to a stronger function-calling model.
-- **Slow turns** — model-bound. Use a `-fast` tier or a stronger mid-size instruct
-  model; this is a tool-calling loop, so weak/omni models are the worst case.
-- **A stop doesn't pin after Approve** — the `onAction` message shape differs in your
-  CopilotKit version. Log `message` at the top of `onAction` in `TripWorkspace.tsx`
-  and adjust the `userAction` read; that's the single integration seam.
 
 ---
 
